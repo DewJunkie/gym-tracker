@@ -33,6 +33,23 @@ let readyPromise: Promise<void> | null = null;
 function ensureWorker(): Promise<void> {
   if (!readyPromise) {
     readyPromise = new Promise<void>((resolve, reject) => {
+      // Safety net: if the worker never reports back (hung WASM load,
+      // stuck OPFS open, …), fail visibly instead of spinning forever.
+      const timer = window.setTimeout(() => {
+        worker?.terminate();
+        worker = null;
+        readyPromise = null;
+        reject(
+          new Error(
+            'Database worker timed out after 30s. Open DevTools (F12) → Console ' +
+              'for the underlying error, then reload the page.',
+          ),
+        );
+      }, 30_000);
+      const done = (fn: () => void) => {
+        window.clearTimeout(timer);
+        fn();
+      };
       worker = new Worker(new URL('./db.worker.ts', import.meta.url), {
         type: 'module',
       });
@@ -46,9 +63,9 @@ function ensureWorker(): Promise<void> {
         if ('type' in data) {
           if (data.type === 'ready') {
             worker?.removeEventListener('message', onMessage);
-            resolve();
+            done(() => resolve());
           } else {
-            reject(new Error(`DB worker init failed: ${data.error}`));
+            done(() => reject(new Error(`DB worker init failed: ${data.error}`)));
           }
           return;
         }
@@ -60,8 +77,15 @@ function ensureWorker(): Promise<void> {
       };
       worker.addEventListener('message', onMessage);
       worker.addEventListener('error', (e) => {
-        reject(e.error instanceof Error ? e.error : new Error('DB worker crashed'));
+        done(() =>
+          reject(e.error instanceof Error ? e.error : new Error('DB worker crashed')),
+        );
       });
+    });
+    // A rejected init (timeout, crash, …) shouldn't poison later calls:
+    // the next dbReady() starts a fresh worker.
+    readyPromise.catch(() => {
+      readyPromise = null;
     });
   }
   return readyPromise;
