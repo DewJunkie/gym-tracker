@@ -91,3 +91,24 @@ medium-grip), and a few historical sets.
 - The OCR engine path and the OPFS worker path are build-verified but have
   not been runtime-tested on a real device yet — first phone run should
   confirm DB init/persistence and a successful plate read.
+
+## Deploy to GitHub Pages
+
+The app is fully static, so GitHub Pages hosts it for free:
+
+1. Create an empty repo on GitHub (any name, e.g. `gym-tracker`).
+2. Push the contents of this directory as the repo root:
+   ```
+   git remote add origin git@github.com:<you>/<repo>.git
+   git push -u origin main
+   ```
+3. In the repo: Settings → Pages → Source: **GitHub Actions**.
+4. The included workflow (`.github/workflows/deploy.yml`) builds on every
+   push to `main` and publishes `dist/`. It sets `PAGES_BASE` from the repo
+   name automatically, so asset URLs, the service worker, and the offline
+   OCR assets all resolve under `https://<you>.github.io/<repo>/` with no
+   manual config. (Exception: a `<you>.github.io` user-site repo is served
+   from `/` — clear the `PAGES_BASE` env line in that case.)
+5. Open the Pages URL on your phone and "Add to Home Screen" to install the
+   PWA. First launch downloads ~26MB of precached OCR assets; afterwards the
+   plate scanner works fully offline.
