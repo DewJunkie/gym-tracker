@@ -33,12 +33,14 @@ let readyPromise: Promise<void> | null = null;
 function ensureWorker(): Promise<void> {
   if (!readyPromise) {
     readyPromise = new Promise<void>((resolve, reject) => {
+      let settled = false;
       // Safety net: if the worker never reports back (hung WASM load,
       // stuck OPFS open, …), fail visibly instead of spinning forever.
       const timer = window.setTimeout(() => {
         worker?.terminate();
         worker = null;
         readyPromise = null;
+        settled = true;
         reject(
           new Error(
             'Database worker timed out after 30s. Open DevTools (F12) → Console ' +
@@ -47,6 +49,8 @@ function ensureWorker(): Promise<void> {
         );
       }, 30_000);
       const done = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
         window.clearTimeout(timer);
         fn();
       };
@@ -55,14 +59,15 @@ function ensureWorker(): Promise<void> {
       });
       const onMessage = (event: MessageEvent) => {
         // Discriminated by presence of `type`: lifecycle messages carry it,
-        // RPC responses carry `id`.
+        // RPC responses carry `id`. NOTE: this listener must stay attached
+        // for the worker's lifetime — removing it on 'ready' would silently
+        // drop every RPC response afterwards.
         const data = event.data as
           | { type: 'ready' }
           | { type: 'init-error'; error: string }
           | { id: number; ok: boolean; rows?: Row[]; changes?: number; error?: string };
         if ('type' in data) {
           if (data.type === 'ready') {
-            worker?.removeEventListener('message', onMessage);
             done(() => resolve());
           } else {
             done(() => reject(new Error(`DB worker init failed: ${data.error}`)));
@@ -77,9 +82,21 @@ function ensureWorker(): Promise<void> {
       };
       worker.addEventListener('message', onMessage);
       worker.addEventListener('error', (e) => {
-        done(() =>
-          reject(e.error instanceof Error ? e.error : new Error('DB worker crashed')),
-        );
+        if (!settled) {
+          done(() =>
+            reject(e.error instanceof Error ? e.error : new Error('DB worker crashed')),
+          );
+        } else {
+          // Worker died after init: fail pending calls and drop the worker
+          // so the next dbReady() starts a fresh one instead of hanging.
+          worker?.terminate();
+          worker = null;
+          readyPromise = null;
+          pending.forEach((call) =>
+            call.reject(new Error('DB worker crashed; please retry.')),
+          );
+          pending.clear();
+        }
       });
     });
     // A rejected init (timeout, crash, …) shouldn't poison later calls:

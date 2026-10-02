@@ -115,6 +115,25 @@ const SCHEMA_V2_TABLES = [
 let sqlite3: SQLiteAPI;
 let db: number;
 
+/**
+ * Concurrency guard (the actual bug behind "stuck on Opening your database").
+ *
+ * wa-sqlite's async WASM bridge (Emscripten Asyncify) supports exactly one
+ * in-flight operation per connection: if two statements interleave on the
+ * same db handle, the Asyncify state machine hits "invalid state" and aborts
+ * the runtime ("RuntimeError: unreachable"), and stray OPFS promise
+ * rejections surface as unhandled NotFoundErrors. The main thread can easily
+ * fire concurrent RPCs (e.g. React StrictMode double-effects, or
+ * Promise.all over several queries), so every statement is serialized
+ * through this mutex. The queue preserves call order; callers just await.
+ */
+let mutexTail: Promise<unknown> = Promise.resolve();
+function serialize<T>(work: () => Promise<T>): Promise<T> {
+  const next = mutexTail.then(work, work);
+  mutexTail = next.catch(() => undefined);
+  return next;
+}
+
 function bindParams(stmt: number, params: Param[]): void {
   params.forEach((p, i) => {
     const idx = i + 1;
@@ -132,40 +151,44 @@ function bindParams(stmt: number, params: Param[]): void {
 }
 
 async function query(sql: string, params: Param[]): Promise<Row[]> {
-  const rows: Row[] = [];
-  // sqlite3.statements() finalizes automatically; do NOT call finalize here.
-  for await (const stmt of sqlite3.statements(db, sql)) {
-    bindParams(stmt, params);
-    const nCols = sqlite3.column_count(stmt);
-    const names: string[] = [];
-    for (let i = 0; i < nCols; i++) names.push(sqlite3.column_name(stmt, i));
-    while ((await sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
-      const row: Row = {};
-      for (let i = 0; i < nCols; i++) {
-        const t = sqlite3.column_type(stmt, i);
-        row[names[i]] =
-          t === SQLite.SQLITE_NULL
-            ? null
-            : t === SQLite.SQLITE_INTEGER
-              ? sqlite3.column_int(stmt, i)
-              : t === SQLite.SQLITE_FLOAT
-                ? sqlite3.column_double(stmt, i)
-                : t === SQLite.SQLITE_BLOB
-                  ? sqlite3.column_blob(stmt, i)
-                  : sqlite3.column_text(stmt, i);
+  return serialize(async () => {
+    const rows: Row[] = [];
+    // sqlite3.statements() finalizes automatically; do NOT call finalize here.
+    for await (const stmt of sqlite3.statements(db, sql)) {
+      bindParams(stmt, params);
+      const nCols = sqlite3.column_count(stmt);
+      const names: string[] = [];
+      for (let i = 0; i < nCols; i++) names.push(sqlite3.column_name(stmt, i));
+      while ((await sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
+        const row: Row = {};
+        for (let i = 0; i < nCols; i++) {
+          const t = sqlite3.column_type(stmt, i);
+          row[names[i]] =
+            t === SQLite.SQLITE_NULL
+              ? null
+              : t === SQLite.SQLITE_INTEGER
+                ? sqlite3.column_int(stmt, i)
+                : t === SQLite.SQLITE_FLOAT
+                  ? sqlite3.column_double(stmt, i)
+                  : t === SQLite.SQLITE_BLOB
+                    ? sqlite3.column_blob(stmt, i)
+                    : sqlite3.column_text(stmt, i);
+        }
+        rows.push(row);
       }
-      rows.push(row);
     }
-  }
-  return rows;
+    return rows;
+  });
 }
 
 async function run(sql: string, params: Param[]): Promise<number> {
-  for await (const stmt of sqlite3.statements(db, sql)) {
-    bindParams(stmt, params);
-    await sqlite3.step(stmt);
-  }
-  return sqlite3.changes(db);
+  return serialize(async () => {
+    for await (const stmt of sqlite3.statements(db, sql)) {
+      bindParams(stmt, params);
+      await sqlite3.step(stmt);
+    }
+    return sqlite3.changes(db);
+  });
 }
 
 async function hasColumn(table: string, column: string): Promise<boolean> {

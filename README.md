@@ -88,9 +88,10 @@ medium-grip), and a few historical sets.
   requirements.
 - Export reads the live `gym-tracker.db` from OPFS at UI-idle; committed
   transactions are flushed by the VFS so the file is self-consistent.
-- The OCR engine path and the OPFS worker path are build-verified but have
-  not been runtime-tested on a real device yet — first phone run should
-  confirm DB init/persistence and a successful plate read.
+- The OPFS worker path is runtime-verified in headless Chromium (boot, 8-way
+  concurrent read/write burst, export); the OCR engine path is build-verified
+  but not yet runtime-tested on a real device — first phone run should confirm
+  a successful plate read.
 
 ## Deploy to GitHub Pages
 
