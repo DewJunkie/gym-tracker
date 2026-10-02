@@ -244,6 +244,21 @@ export async function createGym(name: string): Promise<Gym> {
   return { id, name, coarse_lat: null, coarse_lng: null, notes: null, updated_at: now };
 }
 
+export async function getGym(id: string): Promise<Gym | null> {
+  const rows = await query('SELECT * FROM gyms WHERE id = ?', [id]);
+  return rows.length ? toGym(rows[0]) : null;
+}
+
+export async function updateGym(id: string, name: string): Promise<Gym> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Gym name cannot be empty');
+  const now = new Date().toISOString();
+  await run('UPDATE gyms SET name = ?, updated_at = ? WHERE id = ?', [trimmed, now, id]);
+  const updated = await getGym(id);
+  if (!updated) throw new Error('Gym not found after update');
+  return updated;
+}
+
 // --- exercise types ----------------------------------------------------------
 
 export async function listExerciseTypes(): Promise<ExerciseType[]> {
@@ -255,6 +270,14 @@ export async function createExerciseType(name: string): Promise<ExerciseType> {
   const now = new Date().toISOString();
   await run('INSERT INTO exercise_types (id, name, updated_at) VALUES (?, ?, ?)', [id, name, now]);
   return { id, name, updated_at: now };
+}
+
+export async function updateExerciseType(id: string, name: string): Promise<ExerciseType> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Exercise name cannot be empty');
+  const now = new Date().toISOString();
+  await run('UPDATE exercise_types SET name = ?, updated_at = ? WHERE id = ?', [trimmed, now, id]);
+  return { id, name: trimmed, updated_at: now };
 }
 
 // --- variations --------------------------------------------------------------
@@ -359,6 +382,44 @@ export async function createMachine(input: NewMachine): Promise<Machine> {
   const created = await getMachine(id);
   if (!created) throw new Error('Failed to read back created machine');
   return created;
+}
+
+export interface MachineUpdate {
+  gym_id?: string;
+  kind?: 'physical' | 'pseudo';
+  qr_payload?: string | null;
+  machine_number?: string | null;
+  default_exercise_type_id?: string | null;
+  label?: string | null;
+}
+
+/** Partial update of a machine; only provided fields are written. */
+export async function updateMachine(id: string, input: MachineUpdate): Promise<Machine> {
+  const clauses: string[] = [];
+  const params: SqlParam[] = [];
+  const set = (col: string, v: SqlParam) => {
+    clauses.push(`${col} = ?`);
+    params.push(v);
+  };
+  if (input.gym_id !== undefined) set('gym_id', input.gym_id);
+  if (input.kind !== undefined) set('kind', input.kind);
+  if (input.qr_payload !== undefined) set('qr_payload', input.qr_payload?.trim() || null);
+  if (input.machine_number !== undefined)
+    set('machine_number', input.machine_number?.trim() || null);
+  if (input.default_exercise_type_id !== undefined)
+    set('default_exercise_type_id', input.default_exercise_type_id);
+  if (input.label !== undefined) set('label', input.label?.trim() || null);
+  if (clauses.length > 0) {
+    const now = new Date().toISOString();
+    await run(`UPDATE machines SET ${clauses.join(', ')}, updated_at = ? WHERE id = ?`, [
+      ...params,
+      now,
+      id,
+    ]);
+  }
+  const updated = await getMachine(id);
+  if (!updated) throw new Error('Machine not found');
+  return updated;
 }
 
 // --- machine images ------------------------------------------------------------

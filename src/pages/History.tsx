@@ -1,134 +1,158 @@
-import { useEffect, useState } from 'react';
-import {
-  getExerciseHistory,
-  getMachineHistory,
-  listExerciseTypes,
-  listMachines,
-} from '../db/client';
-import type { EnrichedSet, ExerciseType, Machine, SetEntry } from '../db/types';
+import { useEffect, useMemo, useState } from 'react';
+import { getAllSetsEnriched } from '../db/client';
+import type { EnrichedSet } from '../db/types';
 
-interface Props {
-  gymId: string;
+function dayKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate(),
+  ).padStart(2, '0')}`;
 }
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+function formatDay(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const opts: Intl.DateTimeFormatOptions = {
+    weekday: 'short',
     month: 'short',
     day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
+  };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString(undefined, opts);
+}
+
+interface ExerciseGroup {
+  exerciseId: string;
+  exerciseName: string;
+  sets: EnrichedSet[];
+}
+
+interface Session {
+  day: string;
+  label: string;
+  gyms: string[];
+  totalSets: number;
+  groups: ExerciseGroup[];
+}
+
+function buildSessions(sets: EnrichedSet[]): Session[] {
+  const days = new Map<string, EnrichedSet[]>();
+  for (const s of sets) {
+    const key = dayKey(s.performed_at);
+    const list = days.get(key);
+    if (list) list.push(s);
+    else days.set(key, [s]);
+  }
+  // getAllSetsEnriched returns newest-first, so insertion order is newest day first.
+  return [...days.entries()].map(([day, daySets]) => {
+    const groups = new Map<string, ExerciseGroup>();
+    for (const s of daySets) {
+      const g = groups.get(s.exercise_type_id);
+      if (g) g.sets.push(s);
+      else
+        groups.set(s.exercise_type_id, {
+          exerciseId: s.exercise_type_id,
+          exerciseName: s.exercise_name ?? 'Unknown exercise',
+          sets: [s],
+        });
+    }
+    const gyms = [...new Set(daySets.map((s) => s.gym_name).filter((x): x is string => !!x))];
+    return {
+      day,
+      label: formatDay(daySets[0].performed_at),
+      gyms,
+      totalSets: daySets.length,
+      groups: [...groups.values()],
+    };
   });
 }
 
-function SetRow({ s, showMachine }: { s: SetEntry | EnrichedSet; showMachine?: boolean }) {
-  const machine =
-    showMachine && 'machine_label' in s
-      ? ` · ${s.machine_label ?? ''}${s.machine_number ? ` #${s.machine_number}` : ''}`
-      : '';
-  const variation =
-    'variation_name' in s && s.variation_name ? ` · ${s.variation_name}` : '';
+function matches(s: EnrichedSet, q: string): boolean {
+  const hay = [s.exercise_name, s.machine_label, s.machine_number, s.variation_name]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+function SetLine({ s }: { s: EnrichedSet }) {
+  const where = [s.machine_label, s.machine_number ? `#${s.machine_number}` : null]
+    .filter(Boolean)
+    .join(' ');
   return (
     <li>
       <span>
-        {formatDateTime(s.performed_at)} — {s.reps} reps × {s.weight_raw} lbs{machine}
-        {variation}
+        {s.reps} reps × {s.weight_raw} lbs
+        {s.variation_name ? ` · ${s.variation_name}` : ''}
+        {where ? <span className="muted"> · {where}</span> : null}
       </span>
       <span className="muted">{s.rpe != null ? `RPE ${s.rpe}` : ''}</span>
     </li>
   );
 }
 
-export default function History({ gymId }: Props) {
-  const [tab, setTab] = useState<'machine' | 'exercise'>('machine');
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [types, setTypes] = useState<ExerciseType[]>([]);
-  const [machineId, setMachineId] = useState('');
-  const [typeId, setTypeId] = useState('');
-  const [machineSets, setMachineSets] = useState<EnrichedSet[]>([]);
-  const [typeSets, setTypeSets] = useState<EnrichedSet[]>([]);
+export default function History() {
+  const [sets, setSets] = useState<EnrichedSet[]>([]);
+  const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listMachines(gymId), listExerciseTypes()])
-      .then(([m, t]) => {
-        setMachines(m);
-        setTypes(t);
-        if (m.length > 0) setMachineId((prev) => prev || m[0].id);
-        if (t.length > 0) setTypeId((prev) => prev || t[0].id);
-      })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'));
-  }, [gymId]);
+    getAllSetsEnriched()
+      .then(setSets)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load feed'));
+  }, []);
 
-  useEffect(() => {
-    if (tab === 'machine' && machineId) {
-      getMachineHistory(machineId)
-        .then(setMachineSets)
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'));
-    }
-  }, [tab, machineId]);
-
-  useEffect(() => {
-    if (tab === 'exercise' && typeId) {
-      getExerciseHistory(typeId)
-        .then(setTypeSets)
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'));
-    }
-  }, [tab, typeId]);
+  const sessions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q ? sets.filter((s) => matches(s, q)) : sets;
+    return buildSessions(filtered);
+  }, [sets, query]);
 
   return (
     <div className="page">
       <h1>History</h1>
-      <div className="tabs">
-        <button className={tab === 'machine' ? 'active' : ''} onClick={() => setTab('machine')}>
-          By machine
-        </button>
-        <button className={tab === 'exercise' ? 'active' : ''} onClick={() => setTab('exercise')}>
-          By exercise
-        </button>
+      <p className="muted">Your recent workouts, newest first.</p>
+
+      <div className="card" style={{ marginBottom: 4 }}>
+        <label className="field" style={{ marginBottom: 0 }}>
+          <span>Search</span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Exercise, machine, or variation…"
+            inputMode="search"
+            aria-label="Search workouts"
+          />
+        </label>
       </div>
+
       {error && <div className="error">{error}</div>}
 
-      {tab === 'machine' ? (
-        <section className="card">
-          <label className="field">
-            <span>Machine</span>
-            <select value={machineId} onChange={(e) => setMachineId(e.target.value)}>
-              {machines.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label ?? `Machine ${m.machine_number ?? '?'}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <ul className="setlist">
-            {machineSets.map((s) => (
-              <SetRow key={s.id} s={s} />
-            ))}
-            {machineSets.length === 0 && <p className="muted">No sets yet.</p>}
-          </ul>
-        </section>
+      {sessions.length === 0 ? (
+        <p className="muted">
+          {query.trim() ? 'No workouts match your search.' : 'No workouts logged yet.'}
+        </p>
       ) : (
-        <section className="card">
-          <label className="field">
-            <span>Exercise</span>
-            <select value={typeId} onChange={(e) => setTypeId(e.target.value)}>
-              {types.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="muted">
-            Weights shown raw per machine — normalized view arrives with ratio learning.
-          </p>
-          <ul className="setlist">
-            {typeSets.map((s) => (
-              <SetRow key={s.id} s={s} showMachine />
+        sessions.map((session) => (
+          <section className="card" key={session.day}>
+            <h2>{session.label}</h2>
+            <p className="muted" style={{ marginTop: -4 }}>
+              {session.gyms.join(' · ')}
+              {session.gyms.length > 0 ? ' · ' : ''}
+              {session.totalSets} set{session.totalSets === 1 ? '' : 's'}
+            </p>
+            {session.groups.map((g) => (
+              <div key={g.exerciseId} style={{ marginTop: 12 }}>
+                <div className="session-exercise">{g.exerciseName}</div>
+                <ul className="setlist">
+                  {g.sets.map((s) => (
+                    <SetLine key={s.id} s={s} />
+                  ))}
+                </ul>
+              </div>
             ))}
-            {typeSets.length === 0 && <p className="muted">No sets yet.</p>}
-          </ul>
-        </section>
+          </section>
+        ))
       )}
     </div>
   );

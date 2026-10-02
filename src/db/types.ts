@@ -61,13 +61,19 @@ export interface MachineRatio {
   updated_at: string;
 }
 
-export type MachineImageKind = 'qr_plate' | 'name' | 'manufacturer' | 'muscle_diagram';
+export type MachineImageKind =
+  | 'qr_plate'
+  | 'name'
+  | 'manufacturer'
+  | 'muscle_diagram'
+  | 'overview';
 
 export const MACHINE_IMAGE_KINDS: Array<{ value: MachineImageKind; label: string }> = [
   { value: 'qr_plate', label: 'QR code / number plate' },
   { value: 'name', label: 'Name plate' },
   { value: 'manufacturer', label: 'Manufacturer' },
   { value: 'muscle_diagram', label: 'Muscle-group diagram' },
+  { value: 'overview', label: 'Overview shot' },
 ];
 
 export interface MachineImage {

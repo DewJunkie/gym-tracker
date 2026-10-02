@@ -6,6 +6,7 @@ import {
   findMachineByQr,
   listGyms,
   listPseudoMachines,
+  updateGym,
 } from './db/client';
 import type { Gym, Machine } from './db/types';
 import Home from './pages/Home';
@@ -77,6 +78,13 @@ export default function App() {
     const g = await createGym(name);
     setGyms((prev) => [...prev, g].sort((a, b) => a.name.localeCompare(b.name)));
     selectGym(g.id);
+  };
+
+  const renameGym = async (id: string, name: string) => {
+    const g = await updateGym(id, name);
+    setGyms((prev) =>
+      prev.map((x) => (x.id === g.id ? g : x)).sort((a, b) => a.name.localeCompare(b.name)),
+    );
   };
 
   const goTab = (tab: Tab) => {
@@ -166,6 +174,7 @@ export default function App() {
             gymId={gymId}
             onSelectGym={selectGym}
             onAddGym={addGym}
+            onRenameGym={renameGym}
             onScan={() => setView({ name: 'scan' })}
             onOcr={() => setView({ name: 'ocr' })}
             onMachineNumber={(num) => void handleMachineNumber(num)}
@@ -196,7 +205,7 @@ export default function App() {
             onOpenMachine={(id) => setView({ name: 'machine', machineId: id })}
           />
         )}
-        {view.name === 'history' && gymId && <History gymId={gymId} />}
+        {view.name === 'history' && <History />}
         {view.name === 'export' && <Export />}
       </main>
       <nav className="tabbar">

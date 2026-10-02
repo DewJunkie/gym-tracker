@@ -59,9 +59,11 @@ medium-grip), and a few historical sets.
 
 - **Machine identification**: scan QR (native BarcodeDetector, ZXing fallback),
   scan a number plate with on-device OCR (Tesseract.js, lazy-loaded, digits
-  whitelist + single-word segmentation), or type the machine number. Machines
-  are scoped per gym; unknown machines get a quick-registration flow with the
-  scanned/OCR'd identifier pre-filled.
+  whitelist + single-word segmentation), or use the searchable machine box on
+  the home screen (filters the gym's machines by number or name; exact number
+  + Go keeps the old jump/registration behavior). Machines are scoped per gym;
+  unknown machines get a quick-registration flow with the scanned/OCR'd
+  identifier pre-filled.
 - **Pseudo-machines**: "Free weights" / "Cable station" are selectable from
   the home screen — no scanning. Every set logs against a machine, physical
   or pseudo.
@@ -69,12 +71,16 @@ medium-grip), and a few historical sets.
   machine; optional per-set **variation** (pick existing or create with
   grip-width/orientation attributes). Variations show in history and CSV.
 - **Classified machine photos**: attach QR/number-plate, name-plate,
-  manufacturer, or muscle-diagram photos per machine. Captured via camera
-  (`capture="environment"`, file-picker fallback), downscaled to JPEG ≤1600px
-  before storing as BLOBs, so the single-file DB export keeps working. Muscle
-  diagrams double as future training data for muscle-group extraction.
-- **History**: by machine or by exercise type (raw weights; normalized view
-  arrives with ratio learning).
+  manufacturer, muscle-diagram, or overview photos per machine. Captured via
+  camera (`capture="environment"`, file-picker fallback), downscaled to JPEG
+  ≤1600px before storing as BLOBs, so the single-file DB export keeps working.
+  Muscle diagrams double as future training data for muscle-group extraction.
+- **Editing**: machines (label, number, kind, default exercise, gym), exercise
+  types (rename), and gyms (rename) can be edited from the Machines tab and
+  home screen.
+- **History feed**: chronological workout feed grouped by calendar day (newest
+  first) with date, gym, and per-exercise set groups (reps × weight, RPE,
+  variation, machine); searchable by exercise, machine, or variation.
 - **Export**: portable `gym-tracker.db` download straight from OPFS, plus sets
   CSV (now includes a variation column).
 

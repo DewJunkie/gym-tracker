@@ -104,8 +104,10 @@ export default function MachineView({ machineId, onBack }: Props) {
     setLastSets(sets);
     setExerciseTypes(types);
     setPhotos(imgs);
-    if (m?.kind === 'physical') setPhotoKind('qr_plate');
-    else setPhotoKind('name');
+    // NOTE: photoKind is intentionally NOT reset here. It classifies the
+    // *pending* photo the user is about to attach; resetting it on every
+    // refresh (e.g. after logging a set) would wipe the user's choice.
+    // The default is set once per machine in the effect below.
     // Pre-fill weight with the last logged weight on this machine.
     if (sets.length > 0) setWeight(String(sets[sets.length - 1].weight_raw));
     return m;
@@ -120,6 +122,13 @@ export default function MachineView({ machineId, onBack }: Props) {
         setError(e instanceof Error ? e.message : 'Failed to load machine'),
       );
   }, [refresh]);
+
+  // Default the photo classifier when the machine (or its kind) changes.
+  // Afterwards the user's choice sticks across data refreshes.
+  const machineKind = machine?.kind;
+  useEffect(() => {
+    if (machineKind) setPhotoKind(machineKind === 'pseudo' ? 'name' : 'qr_plate');
+  }, [machineId, machineKind]);
 
   // Load variations whenever the effective exercise type changes.
   const effectiveExerciseId =
