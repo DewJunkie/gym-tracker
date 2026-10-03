@@ -6,6 +6,7 @@ import {
   deleteMachineImage,
   getLastSessionSets,
   getMachine,
+  getMostRecentExerciseForMachine,
   listExerciseTypes,
   listMachineImages,
   listVariations,
@@ -72,7 +73,9 @@ export default function MachineView({ machineId, onBack }: Props) {
   const [lastSets, setLastSets] = useState<EnrichedSet[]>([]);
   const [photos, setPhotos] = useState<MachineImage[]>([]);
 
-  // Exercise selection (pseudo-machines have no default exercise).
+  // Exercise selection is an explicit per-session step, decoupled from the
+  // machine: the picker starts at the machine's default exercise, else the
+  // most recently logged exercise here, else empty (user picks/adds).
   const [exerciseId, setExerciseId] = useState('');
   const [newExercise, setNewExercise] = useState('');
   // Variation selection.
@@ -93,35 +96,52 @@ export default function MachineView({ machineId, onBack }: Props) {
   const [photoKind, setPhotoKind] = useState<MachineImageKind>('qr_plate');
   const [uploading, setUploading] = useState(false);
 
-  const refresh = useCallback(async () => {
-    const [m, sets, types, imgs] = await Promise.all([
-      getMachine(machineId),
-      getLastSessionSets(machineId),
-      listExerciseTypes(),
-      listMachineImages(machineId),
-    ]);
-    setMachine(m);
-    setLastSets(sets);
-    setExerciseTypes(types);
-    setPhotos(imgs);
-    // NOTE: photoKind is intentionally NOT reset here. It classifies the
-    // *pending* photo the user is about to attach; resetting it on every
-    // refresh (e.g. after logging a set) would wipe the user's choice.
-    // The default is set once per machine in the effect below.
-    // Pre-fill weight with the last logged weight on this machine.
-    if (sets.length > 0) setWeight(String(sets[sets.length - 1].weight_raw));
-    return m;
-  }, [machineId]);
+  // Load the session summary for an exercise (or across all exercises when
+  // none is selected) and pre-fill weight from its most recent set.
+  const loadSession = useCallback(
+    async (exId?: string) => {
+      const sets = await getLastSessionSets(machineId, exId ?? null);
+      setLastSets(sets);
+      if (sets.length > 0) setWeight(String(sets[sets.length - 1].weight_raw));
+    },
+    [machineId],
+  );
 
+  // Initial load: machine, exercise types, photos, then resolve the starting
+  // exercise (default → most recently logged here → none) and its session.
   useEffect(() => {
-    refresh()
-      .then((m) => {
-        if (m?.default_exercise_type_id) setExerciseId(m.default_exercise_type_id);
-      })
-      .catch((e: unknown) =>
-        setError(e instanceof Error ? e.message : 'Failed to load machine'),
-      );
-  }, [refresh]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await getMachine(machineId);
+        if (cancelled) return;
+        setMachine(m);
+        const [types, imgs] = await Promise.all([
+          listExerciseTypes(),
+          listMachineImages(machineId),
+        ]);
+        if (cancelled) return;
+        setExerciseTypes(types);
+        setPhotos(imgs);
+        // NOTE: photoKind is intentionally NOT reset here. It classifies the
+        // *pending* photo the user is about to attach; resetting it on every
+        // data load would wipe the user's choice. The default is set once
+        // per machine in the effect below.
+        let initial: string | null = m?.default_exercise_type_id ?? null;
+        if (!initial) initial = await getMostRecentExerciseForMachine(machineId);
+        if (cancelled) return;
+        const exId = initial ?? '';
+        setExerciseId(exId);
+        await loadSession(exId || undefined);
+      } catch (e: unknown) {
+        if (!cancelled)
+          setError(e instanceof Error ? e.message : 'Failed to load machine');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [machineId, loadSession]);
 
   // Default the photo classifier when the machine (or its kind) changes.
   // Afterwards the user's choice sticks across data refreshes.
@@ -130,25 +150,36 @@ export default function MachineView({ machineId, onBack }: Props) {
     if (machineKind) setPhotoKind(machineKind === 'pseudo' ? 'name' : 'qr_plate');
   }, [machineId, machineKind]);
 
-  // Load variations whenever the effective exercise type changes.
-  const effectiveExerciseId =
-    exerciseId || machine?.default_exercise_type_id || '';
+  // Load variations whenever the selected exercise changes.
   useEffect(() => {
-    if (!effectiveExerciseId) {
+    if (!exerciseId) {
       setVariations([]);
       return;
     }
-    listVariations(effectiveExerciseId)
+    listVariations(exerciseId)
       .then((v) => {
         setVariations(v);
         setVariationId((prev) => (v.some((x) => x.id === prev) ? prev : ''));
       })
       .catch(() => setVariations([]));
-  }, [effectiveExerciseId]);
+  }, [exerciseId]);
+
+  // Switching exercises is one tap: reload that exercise's session summary,
+  // pre-fill its weight, and reset the variation choice.
+  const onExerciseChange = (id: string) => {
+    setExerciseId(id);
+    setNewExercise('');
+    setVariationId('');
+    setShowNewVariation(false);
+    setNewVarName('');
+    loadSession(id || undefined).catch(() =>
+      setError('Failed to load session for that exercise'),
+    );
+  };
 
   const submit = async () => {
     setError(null);
-    let exId = exerciseId || machine?.default_exercise_type_id || '';
+    let exId = exerciseId;
     const trimmedNew = newExercise.trim();
     if (trimmedNew) {
       const created = await createExerciseType(trimmedNew);
@@ -202,7 +233,9 @@ export default function MachineView({ machineId, onBack }: Props) {
         rpe: rpeNum,
       });
       setRpe('');
-      await refresh();
+      // Reload the session for the exercise just logged; the user's exercise
+      // selection is left alone (no snap-back to the machine default).
+      await loadSession(exId || undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to log set');
     } finally {
@@ -231,8 +264,11 @@ export default function MachineView({ machineId, onBack }: Props) {
     setPhotos(await listMachineImages(machineId));
   };
 
+  const selectedExerciseName = exerciseId
+    ? (exerciseTypes.find((t) => t.id === exerciseId)?.name ?? 'Unknown exercise')
+    : null;
   const exerciseName =
-    exerciseTypes.find((t) => t.id === effectiveExerciseId)?.name ??
+    selectedExerciseName ??
     (machine?.kind === 'pseudo' ? 'Pick an exercise below' : 'Unknown exercise');
 
   return (
@@ -253,30 +289,30 @@ export default function MachineView({ machineId, onBack }: Props) {
 
           <section className="card">
             <h2>Log a set</h2>
-            {!machine.default_exercise_type_id && (
-              <>
-                <label className="field">
-                  <span>Exercise</span>
-                  <select value={exerciseId} onChange={(e) => setExerciseId(e.target.value)}>
-                    <option value="">— pick —</option>
-                    {exerciseTypes.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Or new exercise</span>
-                  <input
-                    value={newExercise}
-                    onChange={(e) => setNewExercise(e.target.value)}
-                    placeholder="e.g. Dumbbell Bench Press"
-                  />
-                </label>
-              </>
-            )}
-            {effectiveExerciseId && (
+            <label className="field">
+              <span>Exercise</span>
+              <select
+                value={exerciseId}
+                onChange={(e) => onExerciseChange(e.target.value)}
+                aria-label="Exercise"
+              >
+                <option value="">— pick —</option>
+                {exerciseTypes.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Or new exercise</span>
+              <input
+                value={newExercise}
+                onChange={(e) => setNewExercise(e.target.value)}
+                placeholder="e.g. Dumbbell Bench Press"
+              />
+            </label>
+            {exerciseId && (
               <label className="field">
                 <span>Variation (optional)</span>
                 <select
@@ -378,9 +414,16 @@ export default function MachineView({ machineId, onBack }: Props) {
           </section>
 
           <section className="card">
-            <h2>Last session</h2>
+            <h2>
+              Last session
+              {selectedExerciseName ? ` — ${selectedExerciseName}` : ''}
+            </h2>
             {lastSets.length === 0 ? (
-              <p className="muted">No sets logged on this machine yet.</p>
+              <p className="muted">
+                {selectedExerciseName
+                  ? `No ${selectedExerciseName} sets logged on this machine yet.`
+                  : 'No sets logged on this machine yet.'}
+              </p>
             ) : (
               <>
                 <p className="muted">{formatDate(lastSets[0].performed_at)}</p>
@@ -390,6 +433,9 @@ export default function MachineView({ machineId, onBack }: Props) {
                       <span>
                         {s.reps} reps × {s.weight_raw} lbs
                         {s.variation_name ? ` · ${s.variation_name}` : ''}
+                        {!exerciseId && s.exercise_name
+                          ? ` · ${s.exercise_name}`
+                          : ''}
                       </span>
                       <span className="muted">{s.rpe != null ? `RPE ${s.rpe}` : ''}</span>
                     </li>

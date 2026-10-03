@@ -516,25 +516,53 @@ export async function logSet(input: NewSet): Promise<SetEntry> {
   };
 }
 
-/** Sets from the most recent calendar day with activity on this machine. */
-export async function getLastSessionSets(machineId: string): Promise<EnrichedSet[]> {
+/**
+ * Sets from the most recent calendar day with activity on this machine.
+ * When exerciseTypeId is given, both the session and the "most recent day"
+ * are scoped to that exercise, so the last-session summary and weight
+ * pre-fill follow the selected exercise in the decoupled logging flow.
+ * With no exercise, the machine's most recent session across all exercises
+ * is returned (the previous behavior).
+ */
+export async function getLastSessionSets(
+  machineId: string,
+  exerciseTypeId?: string | null,
+): Promise<EnrichedSet[]> {
+  const exFilter = exerciseTypeId ? 'AND s.exercise_type_id = ?' : '';
+  const exSubFilter = exerciseTypeId ? 'AND exercise_type_id = ?' : '';
+  const params = exerciseTypeId
+    ? [machineId, exerciseTypeId, machineId, exerciseTypeId]
+    : [machineId, machineId];
   const rows = await query(
-    `SELECT s.*, v.name AS variation_name
+    `SELECT s.*, v.name AS variation_name, et.name AS exercise_name
      FROM sets s
      LEFT JOIN variations v ON v.id = s.variation_id
+     LEFT JOIN exercise_types et ON et.id = s.exercise_type_id
      WHERE s.machine_id = ?
-       AND date(s.performed_at) = (SELECT date(MAX(performed_at)) FROM sets WHERE machine_id = ?)
+       ${exFilter}
+       AND date(s.performed_at) = (SELECT date(MAX(performed_at)) FROM sets WHERE machine_id = ? ${exSubFilter})
      ORDER BY s.performed_at`,
-    [machineId, machineId],
+    params,
   );
   return rows.map((r) => ({
     ...toSet(r),
     machine_label: null,
     machine_number: null,
-    exercise_name: null,
+    exercise_name: r.exercise_name as string | null,
     variation_name: r.variation_name as string | null,
     gym_name: null,
   }));
+}
+
+/** Exercise type of the most recent set logged on a machine, or null. */
+export async function getMostRecentExerciseForMachine(
+  machineId: string,
+): Promise<string | null> {
+  const rows = await query(
+    `SELECT exercise_type_id FROM sets WHERE machine_id = ? ORDER BY performed_at DESC LIMIT 1`,
+    [machineId],
+  );
+  return rows.length > 0 ? (rows[0].exercise_type_id as string) : null;
 }
 
 export async function getMachineHistory(machineId: string): Promise<EnrichedSet[]> {

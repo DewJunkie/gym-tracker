@@ -67,9 +67,14 @@ medium-grip), and a few historical sets.
 - **Pseudo-machines**: "Free weights" / "Cable station" are selectable from
   the home screen — no scanning. Every set logs against a machine, physical
   or pseudo.
-- **Set logging**: reps, raw stack weight, RPE per set; last-session view per
-  machine; optional per-set **variation** (pick existing or create with
-  grip-width/orientation attributes). Variations show in history and CSV.
+- **Set logging**: reps, raw stack weight, RPE per set. Machine and exercise
+  are independent per logging session: after opening a machine you pick the
+  exercise (defaults to the machine's default, else the last exercise logged
+  there), then an optional per-set **variation** (pick existing or create with
+  grip-width/orientation attributes). The last-session view and weight
+  pre-fill follow the selected exercise; with none selected they span the
+  machine's most recent session across exercises. Variations show in history
+  and CSV.
 - **Classified machine photos**: attach QR/number-plate, name-plate,
   manufacturer, muscle-diagram, or overview photos per machine. Captured via
   camera (`capture="environment"`, file-picker fallback), downscaled to JPEG
