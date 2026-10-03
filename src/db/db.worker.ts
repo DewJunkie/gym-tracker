@@ -12,8 +12,9 @@
  *
  * Schema is versioned (schema_version table). v1 is the original scaffold
  * schema; v2 adds machine kinds/pseudo-machines, per-set variations, and
- * classified machine photos. Migrations are idempotent so an existing v1
- * database upgrades in place without losing data.
+ * classified machine photos; v3 adds the learned machine↔exercise
+ * associations. Migrations are idempotent so an existing v1/v2 database
+ * upgrades in place without losing data.
  */
 
 import * as SQLite from 'wa-sqlite';
@@ -41,7 +42,7 @@ export interface DbResponse {
   error?: string;
 }
 
-const LATEST_SCHEMA_VERSION = 2;
+/** Schema versions: 1 = scaffold, 2 = kinds/variations/photos, 3 = machine↔exercise associations. */
 
 /** v1: the original scaffold schema. */
 const SCHEMA_V1 = [
@@ -111,6 +112,35 @@ const SCHEMA_V2_TABLES = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_images_machine ON machine_images(machine_id)`,
 ];
+
+/** v3: learned machine↔exercise associations (see backfillMachineExercises). */
+const SCHEMA_V3_TABLES = [
+  `CREATE TABLE IF NOT EXISTS machine_exercises (
+     machine_id TEXT NOT NULL REFERENCES machines(id),
+     exercise_type_id TEXT NOT NULL REFERENCES exercise_types(id),
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (machine_id, exercise_type_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_machine_exercises_machine ON machine_exercises(machine_id)`,
+];
+
+/** Idempotent: link every (machine, exercise) pair seen in sets, plus each
+ * machine's default exercise. Runs in the v3 migration and after seeding. */
+async function backfillMachineExercises(): Promise<void> {
+  const now = new Date().toISOString();
+  await run(
+    `INSERT OR IGNORE INTO machine_exercises (machine_id, exercise_type_id, created_at, updated_at)
+     SELECT DISTINCT machine_id, exercise_type_id, ?, ? FROM sets`,
+    [now, now],
+  );
+  await run(
+    `INSERT OR IGNORE INTO machine_exercises (machine_id, exercise_type_id, created_at, updated_at)
+     SELECT id, default_exercise_type_id, ?, ? FROM machines
+     WHERE default_exercise_type_id IS NOT NULL`,
+    [now, now],
+  );
+}
 
 let sqlite3: SQLiteAPI;
 let db: number;
@@ -265,7 +295,7 @@ async function migrate(): Promise<void> {
     await run('INSERT INTO schema_version (version) VALUES (1)', []);
   }
 
-  if (version < LATEST_SCHEMA_VERSION) {
+  if (version < 2) {
     // machines.kind — 'physical' for everything that predates the column.
     if (!(await hasColumn('machines', 'kind'))) {
       await sqlite3.exec(
@@ -297,9 +327,16 @@ async function migrate(): Promise<void> {
     // Backfill v2 seed data for databases created by the v1 scaffold.
     await ensurePseudoMachines();
     await ensureLatPulldownVariations();
-    await run('INSERT OR REPLACE INTO schema_version (version) VALUES (?)', [
-      LATEST_SCHEMA_VERSION,
-    ]);
+    await run('INSERT OR REPLACE INTO schema_version (version) VALUES (2)', []);
+  }
+
+  if (version < 3) {
+    for (const stmt of SCHEMA_V3_TABLES) {
+      await sqlite3.exec(db, stmt);
+    }
+    // Learned associations from existing sets + machine defaults.
+    await backfillMachineExercises();
+    await run('INSERT OR REPLACE INTO schema_version (version) VALUES (3)', []);
   }
 }
 
@@ -349,6 +386,9 @@ async function seedIfEmpty(): Promise<void> {
   await run(insertSet, [crypto.randomUUID(), mLatA, latId, null, yesterday, 8, 160, 9, null, now]);
   await run(insertSet, [crypto.randomUUID(), mChest, chestId, null, yesterday, 12, 90, 7, null, now]);
   await run(insertSet, [crypto.randomUUID(), mChest, chestId, null, yesterday, 10, 100, 8, null, now]);
+
+  // Link the seeded (machine, exercise) pairs (fresh DBs seed after migrate()).
+  await backfillMachineExercises();
 }
 
 async function main(): Promise<void> {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { startQrScan, type ScanHandle } from '../qr/scanner';
+import { decodeQrFromImage, startQrScan, type ScanHandle } from '../qr/scanner';
 
 interface Props {
   onScan: (payload: string) => void;
@@ -8,9 +8,11 @@ interface Props {
 
 export default function ScannerView({ onScan, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
   const handleRef = useRef<ScanHandle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [usingFallback, setUsingFallback] = useState(false);
+  const [decoding, setDecoding] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,15 +64,50 @@ export default function ScannerView({ onScan, onCancel }: Props) {
       ) : (
         <video ref={videoRef} className="scanner-video" muted playsInline />
       )}
-      <button
-        className="secondary"
-        onClick={() => {
-          handleRef.current?.stop();
-          onCancel();
-        }}
-      >
-        Cancel
-      </button>
+      <div className="row">
+        <button
+          className="secondary"
+          onClick={() => {
+            handleRef.current?.stop();
+            onCancel();
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          className="secondary"
+          onClick={() => uploadRef.current?.click()}
+          disabled={decoding}
+        >
+          {decoding ? 'Reading image…' : 'Upload image'}
+        </button>
+      </div>
+      <input
+        ref={uploadRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={(e) => void onUploadFile(e.target.files?.[0])}
+      />
+      <p className="muted">Camera is the default; upload reads a QR code from an image file.</p>
     </div>
   );
+
+  async function onUploadFile(file: File | undefined) {
+    if (!file) return;
+    setDecoding(true);
+    setError(null);
+    try {
+      const payload = await decodeQrFromImage(file);
+      handleRef.current?.stop();
+      onScan(payload);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Could not read a QR code from that image.',
+      );
+    } finally {
+      setDecoding(false);
+      if (uploadRef.current) uploadRef.current.value = '';
+    }
+  }
 }
