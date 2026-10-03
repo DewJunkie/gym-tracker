@@ -45,6 +45,9 @@ idempotent, so a v1 database upgrades in place):
   (`id, exercise_type_id, name, attributes_json`); `sets.variation_id`
   nullable; new `machine_images` table
   (`id, machine_id, kind, image_blob BLOB, mime_type, captured_at, notes`).
+- v3: new `machine_exercises` table (`machine_id, exercise_type_id,
+  created_at, updated_at`) recording the learned machine↔exercise
+  associations; backfilled from existing sets + machine defaults.
 
 All tables use UUID primary keys and `updated_at` timestamps (sync-friendly
 for a future backend).
@@ -61,7 +64,9 @@ medium-grip), and a few historical sets.
   scan a number plate with on-device OCR (Tesseract.js, lazy-loaded, digits
   whitelist + single-word segmentation), or use the searchable machine box on
   the home screen (filters the gym's machines by number or name; exact number
-  + Go keeps the old jump/registration behavior). Machines are scoped per gym;
+  + Go keeps the old jump/registration behavior). Both scanner screens default
+  to the camera and offer an "Upload image" fallback that reads the QR/plate
+  from an image file (handy for testing). Machines are scoped per gym;
   unknown machines get a quick-registration flow with the scanned/OCR'd
   identifier pre-filled.
 - **Pseudo-machines**: "Free weights" / "Cable station" are selectable from
@@ -74,11 +79,16 @@ medium-grip), and a few historical sets.
   grip-width/orientation attributes). The last-session view and weight
   pre-fill follow the selected exercise; with none selected they span the
   machine's most recent session across exercises. Variations show in history
-  and CSV.
+  and CSV. Exercise↔machine associations are learned from usage: once a
+  machine has logged exercises, its picker lists those (most recently used
+  first) instead of every exercise in the DB, with "Show all exercises" as
+  the escape hatch; typing a new exercise name creates the type, and the
+  association is recorded when the set is logged.
 - **Classified machine photos**: attach QR/number-plate, name-plate,
-  manufacturer, muscle-diagram, or overview photos per machine. Captured via
-  camera (`capture="environment"`, file-picker fallback), downscaled to JPEG
-  ≤1600px before storing as BLOBs, so the single-file DB export keeps working.
+  manufacturer, muscle-diagram, or overview photos per machine. "Take photo"
+  opens the camera (`capture="environment"`); "Upload" picks an image file.
+  Photos are downscaled to JPEG ≤1600px before storing as BLOBs, so the
+  single-file DB export keeps working.
   Muscle diagrams double as future training data for muscle-group extraction.
 - **Editing**: machines (label, number, kind, default exercise, gym), exercise
   types (rename), and gyms (rename) can be edited from the Machines tab and

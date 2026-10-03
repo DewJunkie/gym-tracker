@@ -8,6 +8,7 @@ import {
   getMachine,
   getMostRecentExerciseForMachine,
   listExerciseTypes,
+  listMachineExercises,
   listMachineImages,
   listVariations,
   logSet,
@@ -78,6 +79,11 @@ export default function MachineView({ machineId, onBack }: Props) {
   // most recently logged exercise here, else empty (user picks/adds).
   const [exerciseId, setExerciseId] = useState('');
   const [newExercise, setNewExercise] = useState('');
+  // Learned machine↔exercise associations: when the machine has any, the
+  // picker is scoped to them (most recently used first) instead of every
+  // exercise in the DB. "Show all exercises" is the escape hatch.
+  const [associatedExercises, setAssociatedExercises] = useState<ExerciseType[]>([]);
+  const [showAllExercises, setShowAllExercises] = useState(false);
   // Variation selection.
   const [variationId, setVariationId] = useState('');
   const [showNewVariation, setShowNewVariation] = useState(false);
@@ -92,7 +98,8 @@ export default function MachineView({ machineId, onBack }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   // Photos.
-  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
   const [photoKind, setPhotoKind] = useState<MachineImageKind>('qr_plate');
   const [uploading, setUploading] = useState(false);
 
@@ -116,13 +123,16 @@ export default function MachineView({ machineId, onBack }: Props) {
         const m = await getMachine(machineId);
         if (cancelled) return;
         setMachine(m);
-        const [types, imgs] = await Promise.all([
+        const [types, imgs, assoc] = await Promise.all([
           listExerciseTypes(),
           listMachineImages(machineId),
+          listMachineExercises(machineId),
         ]);
         if (cancelled) return;
         setExerciseTypes(types);
         setPhotos(imgs);
+        setAssociatedExercises(assoc);
+        setShowAllExercises(false);
         // NOTE: photoKind is intentionally NOT reset here. It classifies the
         // *pending* photo the user is about to attach; resetting it on every
         // data load would wipe the user's choice. The default is set once
@@ -236,6 +246,9 @@ export default function MachineView({ machineId, onBack }: Props) {
       // Reload the session for the exercise just logged; the user's exercise
       // selection is left alone (no snap-back to the machine default).
       await loadSession(exId || undefined);
+      // The logged set may have created a new association — refresh the
+      // picker's scope.
+      setAssociatedExercises(await listMachineExercises(machineId));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to log set');
     } finally {
@@ -255,7 +268,8 @@ export default function MachineView({ machineId, onBack }: Props) {
       setError(e instanceof Error ? e.message : 'Could not attach photo');
     } finally {
       setUploading(false);
-      if (fileRef.current) fileRef.current.value = '';
+      if (cameraRef.current) cameraRef.current.value = '';
+      if (uploadRef.current) uploadRef.current.value = '';
     }
   };
 
@@ -267,6 +281,10 @@ export default function MachineView({ machineId, onBack }: Props) {
   const selectedExerciseName = exerciseId
     ? (exerciseTypes.find((t) => t.id === exerciseId)?.name ?? 'Unknown exercise')
     : null;
+  // Learned scoping: when this machine has associated exercises, the picker
+  // lists those (most recently used first) instead of the whole DB.
+  const scopedExercises = associatedExercises.length > 0 && !showAllExercises;
+  const visibleExercises = scopedExercises ? associatedExercises : exerciseTypes;
   const exerciseName =
     selectedExerciseName ??
     (machine?.kind === 'pseudo' ? 'Pick an exercise below' : 'Unknown exercise');
@@ -293,15 +311,23 @@ export default function MachineView({ machineId, onBack }: Props) {
               <span>Exercise</span>
               <select
                 value={exerciseId}
-                onChange={(e) => onExerciseChange(e.target.value)}
+                onChange={(e) => {
+                  // Escape hatch: show every exercise in the DB.
+                  if (e.target.value === '__all') {
+                    setShowAllExercises(true);
+                    return;
+                  }
+                  onExerciseChange(e.target.value);
+                }}
                 aria-label="Exercise"
               >
                 <option value="">— pick —</option>
-                {exerciseTypes.map((t) => (
+                {visibleExercises.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
                   </option>
                 ))}
+                {scopedExercises && <option value="__all">Show all exercises…</option>}
               </select>
             </label>
             <label className="field">
@@ -456,38 +482,51 @@ export default function MachineView({ machineId, onBack }: Props) {
                 ))}
               </div>
             )}
-            <div className="row" style={{ marginTop: 12 }}>
-              <label className="field" style={{ flex: 1 }}>
-                <span>Photo type</span>
-                <select
-                  value={photoKind}
-                  onChange={(e) => setPhotoKind(e.target.value as MachineImageKind)}
-                >
-                  {MACHINE_IMAGE_KINDS.map((k) => (
-                    <option key={k.value} value={k.value}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <label className="field">
+              <span>Photo type</span>
+              <select
+                value={photoKind}
+                onChange={(e) => setPhotoKind(e.target.value as MachineImageKind)}
+              >
+                {MACHINE_IMAGE_KINDS.map((k) => (
+                  <option key={k.value} value={k.value}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="row">
+              <button
+                className="primary"
+                onClick={() => cameraRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? 'Adding…' : 'Take photo'}
+              </button>
               <button
                 className="secondary"
-                onClick={() => fileRef.current?.click()}
+                onClick={() => uploadRef.current?.click()}
                 disabled={uploading}
-                style={{ alignSelf: 'flex-end' }}
               >
-                {uploading ? 'Adding…' : 'Add photo'}
+                Upload
               </button>
             </div>
             <input
-              ref={fileRef}
+              ref={cameraRef}
               type="file"
               accept="image/*"
               capture="environment"
               style={{ display: 'none' }}
               onChange={(e) => void onPhotoFile(e.target.files?.[0])}
             />
-            <p className="muted">Uses the camera on phones, file picker on desktop.</p>
+            <input
+              ref={uploadRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => void onPhotoFile(e.target.files?.[0])}
+            />
+            <p className="muted">Take photo uses the camera; Upload picks an image file.</p>
           </section>
         </>
       ) : (

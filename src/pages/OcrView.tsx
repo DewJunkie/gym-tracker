@@ -6,8 +6,24 @@ interface Props {
   onCancel: () => void;
 }
 
+/** Downscaled canvas snapshot; number plates don't need full resolution. */
+function snapshotToCanvas(
+  srcW: number,
+  srcH: number,
+  draw: (w: number, h: number, ctx: CanvasRenderingContext2D) => void,
+): HTMLCanvasElement {
+  const scale = Math.min(1, 1280 / Math.max(srcW, srcH));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(srcW * scale));
+  canvas.height = Math.max(1, Math.round(srcH * scale));
+  const ctx = canvas.getContext('2d');
+  if (ctx) draw(canvas.width, canvas.height, ctx);
+  return canvas;
+}
+
 export default function OcrView({ onResult, onCancel }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<'starting' | 'ready' | 'working'>('starting');
   const [error, setError] = useState<string | null>(null);
   const [digits, setDigits] = useState('');
@@ -42,19 +58,11 @@ export default function OcrView({ onResult, onCancel }: Props) {
     };
   }, []);
 
-  const capture = async () => {
-    const video = videoRef.current;
-    if (!video || video.videoWidth === 0) return;
+  const recognizeCanvas = async (canvas: HTMLCanvasElement) => {
     setStatus('working');
     setError(null);
     setRecognized(false);
     try {
-      // Snapshot the frame, downscaled — number plates don't need full resolution.
-      const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
       const text = await recognizeDigits(canvas);
       setDigits(text);
       setRecognized(true);
@@ -63,6 +71,43 @@ export default function OcrView({ onResult, onCancel }: Props) {
       setError(e instanceof Error ? e.message : 'OCR failed');
     } finally {
       setStatus('ready');
+    }
+  };
+
+  const capture = async () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+    // Snapshot the frame, downscaled — number plates don't need full resolution.
+    const canvas = snapshotToCanvas(video.videoWidth, video.videoHeight, (w, h, ctx) =>
+      ctx.drawImage(video, 0, 0, w, h),
+    );
+    await recognizeCanvas(canvas);
+  };
+
+  const onUploadFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const el = new Image();
+        el.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(el);
+        };
+        el.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Could not read that image file.'));
+        };
+        el.src = url;
+      });
+      const canvas = snapshotToCanvas(img.naturalWidth, img.naturalHeight, (w, h, ctx) =>
+        ctx.drawImage(img, 0, 0, w, h),
+      );
+      await recognizeCanvas(canvas);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not read that image file.');
+    } finally {
+      if (uploadRef.current) uploadRef.current.value = '';
     }
   };
 
@@ -83,13 +128,33 @@ export default function OcrView({ onResult, onCancel }: Props) {
       {status === 'starting' && !error && <p className="muted">Starting camera…</p>}
 
       {!recognized ? (
-        <button
-          className="primary big"
-          onClick={() => void capture()}
-          disabled={status !== 'ready'}
-        >
-          {status === 'working' ? 'Reading plate…' : 'Capture & read'}
-        </button>
+        <>
+          <div className="row">
+            <button
+              className="primary big"
+              onClick={() => void capture()}
+              disabled={status !== 'ready'}
+            >
+              {status === 'working' ? 'Reading plate…' : 'Capture & read'}
+            </button>
+            <button
+              className="secondary"
+              onClick={() => uploadRef.current?.click()}
+              disabled={status === 'working'}
+              style={{ alignSelf: 'flex-end' }}
+            >
+              Upload image
+            </button>
+          </div>
+          <input
+            ref={uploadRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => void onUploadFile(e.target.files?.[0])}
+          />
+          <p className="muted">Camera is the default; upload reads a plate from an image file.</p>
+        </>
       ) : (
         <section className="card">
           <label className="field">

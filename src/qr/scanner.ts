@@ -8,7 +8,7 @@ interface NativeBarcode {
   rawValue: string;
 }
 interface NativeBarcodeDetector {
-  detect(source: HTMLVideoElement): Promise<NativeBarcode[]>;
+  detect(source: ImageBitmapSource): Promise<NativeBarcode[]>;
 }
 declare global {
   interface Window {
@@ -18,6 +18,56 @@ declare global {
 
 export interface ScanHandle {
   stop: () => void;
+}
+
+/**
+ * Decode a QR code from an uploaded image file (camera fallback for testing
+ * or when the camera can't be used). Tries the native BarcodeDetector on a
+ * canvas first, then the ZXing image decoder. Throws a human-readable error
+ * when no QR code is found.
+ */
+export async function decodeQrFromImage(file: Blob): Promise<string> {
+  const bitmap = await createImageBitmap(file).catch(() => {
+    throw new Error('Could not read that image file.');
+  });
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+
+    if (window.BarcodeDetector) {
+      try {
+        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        const codes = await detector.detect(canvas);
+        if (codes.length > 0 && codes[0].rawValue) return codes[0].rawValue;
+      } catch {
+        // Fall through to ZXing.
+      }
+    }
+
+    // ZXing fallback: decode from an <img> element.
+    const { BrowserQRCodeReader } = await import('@zxing/browser');
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Could not read that image file.'));
+        el.src = url;
+      });
+      const result = await new BrowserQRCodeReader()
+        .decodeFromImageElement(img)
+        .catch(() => null);
+      const text = result?.getText();
+      if (text) return text;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } finally {
+    bitmap.close();
+  }
+  throw new Error('No QR code found in that image — try a clearer shot.');
 }
 
 function stopTracks(video: HTMLVideoElement) {

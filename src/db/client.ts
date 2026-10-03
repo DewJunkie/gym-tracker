@@ -280,6 +280,41 @@ export async function updateExerciseType(id: string, name: string): Promise<Exer
   return { id, name: trimmed, updated_at: now };
 }
 
+// --- machine ↔ exercise associations (learned from usage) --------------------
+// A machine "knows" the exercises logged on it: the picker is scoped to these
+// instead of every exercise in the DB. No manual mapping UI — associations
+// are created from logged sets (+ machine defaults via migration backfill).
+
+/** Record that an exercise is done on a machine; bumps recency on repeats. */
+export async function linkMachineExercise(
+  machineId: string,
+  exerciseTypeId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await run(
+    `INSERT OR IGNORE INTO machine_exercises (machine_id, exercise_type_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?)`,
+    [machineId, exerciseTypeId, now, now],
+  );
+  await run(
+    `UPDATE machine_exercises SET updated_at = ? WHERE machine_id = ? AND exercise_type_id = ?`,
+    [now, machineId, exerciseTypeId],
+  );
+}
+
+/** Exercises associated with a machine, most recently used first. */
+export async function listMachineExercises(machineId: string): Promise<ExerciseType[]> {
+  return (
+    await query(
+      `SELECT et.* FROM exercise_types et
+       JOIN machine_exercises me ON me.exercise_type_id = et.id
+       WHERE me.machine_id = ?
+       ORDER BY me.updated_at DESC, et.name`,
+      [machineId],
+    )
+  ).map(toExerciseType);
+}
+
 // --- variations --------------------------------------------------------------
 
 export async function listVariations(exerciseTypeId: string): Promise<Variation[]> {
@@ -381,6 +416,10 @@ export async function createMachine(input: NewMachine): Promise<Machine> {
   );
   const created = await getMachine(id);
   if (!created) throw new Error('Failed to read back created machine');
+  // A machine registered with a default exercise already "knows" it.
+  if (created.default_exercise_type_id) {
+    await linkMachineExercise(id, created.default_exercise_type_id);
+  }
   return created;
 }
 
@@ -502,6 +541,8 @@ export async function logSet(input: NewSet): Promise<SetEntry> {
       now,
     ],
   );
+  // Every logged set teaches the machine↔exercise association.
+  await linkMachineExercise(input.machine_id, input.exercise_type_id);
   return {
     id,
     machine_id: input.machine_id,
